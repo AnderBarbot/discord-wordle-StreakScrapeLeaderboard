@@ -1,12 +1,14 @@
 import os
 import logging
 from dotenv import load_dotenv
-
 import discord
 from discord.ext import commands
 
-from storage import init_db, load_all_users, clear_all_users
-from processes import parse_wordle_message, build_leaderboard_embed
+from storage import (
+    init_db, load_all_users, clear_all_users,
+    message_already_processed, mark_message_processed
+)
+from processes import parse_wordle_message, build_leaderboard_embed, GROUP_TRIGGER
 
 # --- Setup ---
 load_dotenv()
@@ -17,10 +19,10 @@ logger = logging.getLogger("wordle_bot")
 
 intents = discord.Intents.default()
 intents.message_content = True
-
+intents.members = True  
 bot = commands.Bot(command_prefix=None, intents=intents)
+
 bot.user_dict = {}
-bot.processed_message_ids = set()
 
 # --- Events ---
 @bot.event
@@ -40,22 +42,23 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
-    if "Your group is on" not in message.content:
+    if GROUP_TRIGGER not in message.content:
         return
+    if message_already_processed(message.id):
+        return
+
     try:
-        logger.debug(f"Parsing attempt: content={message.content.replace("\n", " ")}")
         parsed = await parse_wordle_message(message, bot.user_dict)
         if parsed:
-            logger.info(f"Parsed Wordle results from message {message.id}")
-        else:
-            logger.debug(f"Message {message.id} parsed but returned no result")
+            mark_message_processed(message.id)
+            logger.info(f"[Parse] Added {parsed} results from message {message.id}")
     except Exception:
         logger.exception("Error parsing message")
 
 # --- Slash Commands ---
 @bot.tree.command(name="leaderboard", description="Show Wordle leaderboard")
 async def leaderboard(interaction: discord.Interaction):
-    embed = build_leaderboard_embed(bot.user_dict)
+    embed = await build_leaderboard_embed(bot.user_dict, interaction.guild)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="catchup", description="Parse all past Wordle messages in this channel")
@@ -63,16 +66,17 @@ async def catchup(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     count = 0
     async for msg in interaction.channel.history(limit=None, oldest_first=True):
-        if "Your group is on" not in msg.content:
+        if GROUP_TRIGGER not in msg.content or msg.author == bot.user:
             continue
-        if msg.author == bot.user or msg.id in bot.processed_message_ids:
+        if message_already_processed(msg.id):
+            logger.debug(f"message already processed: {msg.id}")
             continue
         try:
-            logger.debug(f"Parsing attempt: content={msg.content.replace("\n", " ")}")
+            logger.debug(f"parsing message {msg.content}")
             parsed = await parse_wordle_message(msg, bot.user_dict)
             if parsed:
-                bot.processed_message_ids.add(msg.id)
-                count += 1
+                mark_message_processed(msg.id)
+                count += parsed
         except Exception:
             logger.exception(f"Error parsing message {msg.id}")
     await interaction.followup.send(f"✅ Catch-up complete. Parsed {count} messages.", ephemeral=True)
