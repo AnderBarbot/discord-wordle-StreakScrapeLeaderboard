@@ -1,74 +1,78 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# wordle_bot.py
-# Author: Petter J. Barhaugen <petter@petternett.no>
+# main.py — Wordle Bot Entrypoint
+# Now using slash commands and dual leaderboards
 
+import os
+import logging
 import discord
 from discord.ext import commands
-import random
-from datetime import datetime, timedelta
-import re
+from discord import app_commands
+from dotenv import load_dotenv
+import asyncio
 
-# Local imports
-import secret
-from converts import convert_grid
-from processes import update_streaks, print_stats, catchup, parse_result
+from storage import init_db, load_all_users, save_user
+from processes import parse_wordle_message
 
-# TODO LIST:
-# * Persistent storage in db
-# * Details of user (!wordle <user>):
-#   * Date of user's first game played
-#   * User's longest streak
-#   * Other stuff?
-# * Hard mode counter (hard mode streak?)
-# * Who posts earliest on average?
-# * Who has the best starter word? (Grid analysis)
-# * Fair overall game score
-#   * Bayesian average?
-#   * Disqualify when significantly less games?
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
 
-CMD_PREFIX = '!'
+# ---- Logging setup ----
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
-# Discord.py setup
-intents = discord.Intents(messages=True, message_content=True, guilds=True)
-bot = commands.Bot(command_prefix=CMD_PREFIX, intents=intents)
-
-random.seed()
-
-# Global list of users
+# ---- Discord setup ----
+intents = discord.Intents.default()  # No privileged intents needed
+bot = commands.Bot(command_prefix="!", intents=intents)
 user_dict = {}
-# Update after first run
-first_run = True
 
-
-# On ready
+# ---- Ready event ----
 @bot.event
 async def on_ready():
-    print(f"wordle_bot is ready!")
+    logger.info("✅ Logged in as %s (ID: %s)", bot.user, bot.user.id)
+    await init_db()
+
+    global user_dict
+    user_dict.update(await load_all_users())
+
+    try:
+        synced = await bot.tree.sync()
+        logger.info("✅ Synced %d slash commands", len(synced))
+    except Exception as e:
+        logger.error("Failed to sync commands: %s", e)
 
 
-# On !wordle command
-@bot.command()
-async def wordle(ctx, arg=None):
-    global first_run
-
-    if first_run:
-        await catchup(ctx.channel, user_dict)
-        first_run = False
-
-    await print_stats(ctx.channel, user_dict, bot)
-
-
-# On message
+# ---- Wordle message listener ----
 @bot.event
-async def on_message(msg):
-    if msg.author == bot.user: return
+async def on_message(message):
+    if message.author.bot:
+        return
 
-    # Parse Wordle result
-    await parse_result(msg, user_dict)
+    result = await parse_wordle_message(message, user_dict)
+    if result:
+        await save_user(result)
+        logger.info("Saved result for %s", result.display_name)
 
-    # Check for commands
-    await bot.process_commands(msg)
+    # Slash commands coexist with prefix, but we don’t need both now
+    await bot.process_commands(message)
 
 
-bot.run(secret.token)
+# ---- Slash commands ----
+@bot.tree.command(name="leaderboard", description="Show the all-time leaderboard")
+async def leaderboard(interaction: discord.Interaction):
+    from processes import build_leaderboard_embed
+    embed = build_leaderboard_embed(user_dict, mode="global")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="streakleaderboard", description="Show the current streak leaderboard")
+async def streak_leaderboard(interaction: discord.Interaction):
+    from processes import build_leaderboard_embed
+    embed = build_leaderboard_embed(user_dict, mode="streak")
+    await interaction.response.send_message(embed=embed)
+
+
+# ---- Main entrypoint ----
+if __name__ == "__main__":
+    logger.info("Starting Wordle Bot with slash commands...")
+    bot.run(TOKEN)

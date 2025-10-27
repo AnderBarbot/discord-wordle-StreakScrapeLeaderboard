@@ -1,58 +1,52 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# User.py
-# Author: Petter J. Barhaugen <petter@petternett.no>
+# User.py — Represents a single Wordle player and their game history.
 
-import discord
-from datetime import date
-
-## Local imports
-from converts import date_to_num
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import List, Optional
 from WordleResult import WordleResult
 
 
-"""
-Stores a discord.py Author object,
-along with a list of Wordle results and the current streak of the user
-"""
+@dataclass
 class User:
-    def __init__(self, author):
-        self.author = author
-        self.results: [WordleResult] = []
-        self.played_nums: [int] = []
-        self.last_played: int | None = None
-        self.cur_streak = 0
-        self.total_games = 0
-        self.streaks = []
-        # latest wordle num = results[len(results)-1].number
+    """Represents a Discord user participating in Wordle."""
+    author: any  # discord.Member or discord.User
+    results: List[WordleResult] = field(default_factory=list)
+    played_nums: List[int] = field(default_factory=list)
+    total_games: int = 0
 
-    # Sorts new result into list
-    async def add_result(self, result: WordleResult):
+    @property
+    def display_name(self):
+        return getattr(self.author, "display_name", str(self.author))
 
-        today_num = await date_to_num()
-        if result.number > today_num:
-            print(f"Invalid Wordle number: {result.number}. Newest number is {today_num}. This might be due to a time zone related error.")
-            return
+    def add_result(self, result: WordleResult):
+        """Insert a result and keep the list sorted."""
+        if result.number in self.played_nums:
+            return False
+        self.results.append(result)
+        self.results.sort(key=lambda r: r.number)
+        self.played_nums.append(result.number)
+        self.total_games += 1
+        return True
 
-        # If not already played that day and not in the future
-        if result.number not in self.played_nums:
-            self.results.append(result)
-            self.results.sort(key=lambda x: x.number)
+    def last_result(self) -> Optional[WordleResult]:
+        return self.results[-1] if self.results else None
 
-            # If result was from today, update streak
-            if result.number == today_num:
-                # Break streak if result is X
-                if result.tries == 'X':
-                    self.cur_streak = 0
-                else:
-                    self.cur_streak += 1
+    def to_dict(self) -> dict:
+        """Serialize user for DB or JSON."""
+        return {
+            "id": getattr(self.author, "id", None),
+            "name": self.display_name,
+            "total_games": self.total_games,
+            "results": [r.to_dict() for r in self.results],
+        }
 
-            # Update played numbers and last played
-            self.total_games += 1
-            self.played_nums.append(result.number)
-            if not self.last_played or result.number > self.last_played:
-                self.last_played = result.number
-
-
-    def get_last_result(self):
-        return self.results[len(self.results)-1]
+    @classmethod
+    def from_dict(cls, data, author=None):
+        """Deserialize user from stored record."""
+        u = cls(author=author or data.get("name"))
+        u.total_games = data.get("total_games", 0)
+        u.results = [WordleResult.from_dict(r) for r in data.get("results", [])]
+        u.played_nums = [r.number for r in u.results]
+        return u

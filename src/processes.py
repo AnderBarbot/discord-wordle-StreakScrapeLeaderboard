@@ -1,184 +1,189 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# processes.py
-# Author: Petter J. Barhaugen <petter@petternett.no>
+# processes.py — Wordle Bot logic, leaderboard computation, parsing, and stats.
+
+import asyncio
+import math
+import re
+import statistics
+from datetime import datetime
+from typing import Dict, List
 
 import discord
-import re
-from emoji import emojize
-from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler  # Streak updates
-from apscheduler.triggers.cron import CronTrigger            #
-from collections import defaultdict
-
-## Local imports
 from User import User
 from WordleResult import WordleResult
-from converts import date_to_num, date_format, min_date, convert_grid
-
-WORDLE_PATTERN = r"^Wordle\s(?P<num>\d+)\s(?P<tries>[\dX])/\d(?P<hard>[\*])?$"
 
 
-"""
-Check if users' streaks are broken
-Is run every day at 00:00:00.
-"""
-async def update_streaks(user_dict):
-
-    yesterday_num = await date_to_num() - 1
-
-    for user in user_dict.values():
-        if user.get_last_result().number != yesterday_num:
-            print(f"update_streaks(): yesterday_num: {yesterday_num}, user {user.author.id} last result: {user.get_last_result().number}")
-            user.streak = 0
+# ---------- CONFIGURATION ----------
+WORDLE_REGEX = re.compile(r"Wordle (\d+) ([1-6X])/6(?:\*?)", re.IGNORECASE)
+BAYESIAN_THRESHOLD = 10  # n₀ (minimum games for Bayesian averaging)
 
 
-""" Print statistics.
-    Calculates average number of guesses, and longest streak.
-    Creates embed and sends to channel/thread.
-"""
-async def print_stats(text_channel, user_dict, bot):
+# ---------- CORE FUNCTIONS ----------
 
-    # Avg_dict: {UID: avg score}
-    avg_dict = defaultdict(float)
+async def parse_result(message: discord.Message, user_dict: Dict[int, User]):
+    """
+    Parse a Wordle result from a user's message and update stats.
+    """
+    match = WORDLE_REGEX.search(message.content)
+    if not match:
+        return  # Not a valid Wordle message
 
-    # Calculate average guesses. Also, get the longest display name for formatting.
-    for user in user_dict.values():
-        avg = i = 0
-        for result in user.results:
-            if result.tries != 'X':
-                avg += int(result.tries)
-                i += 1
-    
-        # Calculate average guesses and insert into dict
-        avg_dict[user.author.id] = avg / i
+    wordle_num = int(match.group(1))
+    tries_str = match.group(2)
+    hard_mode = "*" in message.content
 
-        # DEBUG
-        # print(f"{user.author.display_name} - average score: {avg/i:.2f}, out of {len(user.results)} games")
+    tries = 7 if "X" in tries_str else int(tries_str)  # 'X' treated as fail (7)
 
-    # Sort dict of average scores by lowest
-    sorted_avg    = sorted(avg_dict.items(), key=lambda item: item[1])
-    sorted_streak = sorted(user_dict.values(), key=lambda item: item.cur_streak, reverse=True)
+    user_id = message.author.id
+    if user_id not in user_dict:
+        user_dict[user_id] = User(message.author)
 
-    # Create Embed
-    stats = discord.Embed(title="Wordle Stats", color=discord.Color.green())
+    user = user_dict[user_id]
 
-    # Least average guesses
-    # avg_rank_str = '\n'.join([str(rank) for rank in range(1, len(sorted_avg)+1)])
-    avg_user_str = '\n'.join([(await bot.fetch_user(score[0])).display_name for score in sorted_avg])
-    avg_str      = '\n'.join([f"{score[1]:.2f}" for score in sorted_avg])
-    avg_user_str = f"{emojize(':crown:')} {avg_user_str}"
+    # Avoid duplicates
+    if wordle_num in user.played_nums:
+        return
 
-    # stats.add_field(name="Rank", value=avg_rank_str, inline=True)
-    stats.add_field(name="User", value=avg_user_str, inline=True)
-    stats.add_field(name="Avg. guesses", value=avg_str, inline=True)
+    result = WordleResult(
+        number=wordle_num,
+        tries=tries,
+        hard=hard_mode,
+        post_time=message.created_at,
+        grid=[],
+    )
 
-    stats.add_field(name='\u200B', value='\u200B', inline=False)
-
-    # Streaks
-    # streak_rank_str = '\n'.join([str(rank) for rank in range(1, len(sorted_streak)+1)])
-    streak_user_str = '\n'.join([(user.author).display_name for user in sorted_streak])
-    streak_str      = '\n'.join([str(user.cur_streak) for user in sorted_streak])
-    
-    # stats.add_field(name="Rank", value=streak_rank_str, inline=True)
-    stats.add_field(name="User", value=streak_user_str, inline=True)
-    stats.add_field(name="Streak", value=streak_str, inline=True)
-
-    await text_channel.send(embed=stats)
+    user.results.append(result)
+    user.played_nums.append(wordle_num)
+    user.total_games += 1
+    await asyncio.sleep(0)  # Yield for async fairness
 
 
-""" Parse Wordle result.
-    Matches with valid Wordle results and adds it to User.
-"""
-async def parse_result(msg, user_dict):
-    
-    msg_lines = msg.content.split("\n")
-    header = msg_lines[0]
-    match = re.search(WORDLE_PATTERN, header)
+async def catchup(channel: discord.TextChannel, user_dict: Dict[int, User]):
+    """
+    Parses message history to populate stats initially.
+    """
+    async for message in channel.history(limit=None, oldest_first=True):
+        await parse_result(message, user_dict)
 
-    # If message is valid Wordle result
-    # match[0] = "Wordle"
-    # match[1] = number
-    # match[2] = no. tries
-    # match[3] = hard?
-    if match:
-        # If user does not exist, create entry
-        if msg.author.id not in user_dict:
-            user_dict[msg.author.id] = User(msg.author)
 
-        # Parse Wordle result
-        hard = bool(match[3])
-        result = WordleResult(int(match[1]),
-                              int(match[2]),
-                              hard,
-                              msg.created_at,
-                              await convert_grid(msg_lines[2:]))
+# ---------- STATISTICS HELPERS ----------
 
-        # Add result Wordle object to user
-        await user_dict[msg.author.id].add_result(result)
+def _bayesian_average(mean, n, global_mean, threshold=BAYESIAN_THRESHOLD):
+    """Compute Bayesian average for ranking stability."""
+    return (threshold * global_mean + n * mean) / (threshold + n)
 
-""" Catch up when bot is started for the first time:
-- Store all messages made after timestamp.
-- Create User instances and store them in user_dict.
-- Update each user's last played if they have one.
-- Set the appropriate streak for each user.
-"""
-async def catchup(text_channel, user_dict):
-    print(f"Catching up in channel/thread {text_channel.name}")
 
-    # Catch up
-    start_date = datetime.strptime(min_date, date_format)
-    async for msg in text_channel.history(limit=None, after=start_date):
-        await parse_result(msg, user_dict)
+def _user_stats(user: User):
+    """Compute all user-level statistics."""
+    if not user.results:
+        return None
 
-    # Update user last played if they have one
-    for user in user_dict.values():
-        if user.get_last_result().number == await date_to_num():
-            user.played_today = True
+    valid_results = [r for r in user.results if r.tries <= 6]
+    failed = [r for r in user.results if r.tries == 7]
 
-    # Set appropriate streak
-    for user in user_dict.values():
+    if not valid_results:
+        return None
 
-        # Start with either today or yesterday's number
-        # Then go backwards and check for streak breaks
-        today_num = await date_to_num()
-        check_num = today_num
-        cur_streak = 0
-        last_result = user.get_last_result()
+    tries_list = [r.tries for r in valid_results]
+    avg = sum(tries_list) / len(tries_list)
+    stddev = statistics.pstdev(tries_list) if len(tries_list) > 1 else 0.0
 
-        # If played valid game today
-        if (int(last_result.number) == today_num and last_result.tries != 'X'):
-            # print(f"Valid game today: {last_result.number} matches {today_num}")
-            cur_streak += 1
+    # Compute streak info
+    sorted_results = sorted(user.results, key=lambda r: r.number)
+    current_streak = 0
+    longest_streak = 0
+    streak_tries = []
+
+    prev_num = None
+    for r in sorted_results:
+        if r.tries == 7:
+            current_streak = 0
+            streak_tries = []
+            continue
+        if prev_num is None or r.number == prev_num + 1:
+            current_streak += 1
+            streak_tries.append(r.tries)
         else:
-            check_num -= 1
+            longest_streak = max(longest_streak, current_streak)
+            current_streak = 1
+            streak_tries = [r.tries]
+        prev_num = r.number
 
-        # Check each day from yesterday for valid games
-        for result in reversed(user.results):
+    longest_streak = max(longest_streak, current_streak)
+    streak_avg = (sum(streak_tries) / len(streak_tries)) if streak_tries else 0.0
+    completion = len(valid_results) / (len(valid_results) + len(failed)) * 100
 
-            # Skip today
-            if (int(result.number) == today_num):
-                # print(f"skipping today, result num: {result.number}, cur num: {check_num}")
-                check_num -= 1
-                continue
+    return {
+        "name": user.author.display_name,
+        "avg": avg,
+        "stddev": stddev,
+        "current_streak": current_streak,
+        "streak_avg": streak_avg,
+        "longest_streak": longest_streak,
+        "completion": completion,
+        "games_played": len(user.results),
+    }
 
-            # If played a valid game this check_num
-            if (int(result.number) == check_num and result.tries != 'X'):
-                # print(f"Valid game: {result.number} matches {check_num}")
-                check_num -= 1
-                cur_streak += 1
-                continue
 
-            else:
-                # print(f"Invalid game: result's {result.number} does not match current number {check_num} or result is X ({result.tries})")
-                break
+# ---------- LEADERBOARD GENERATION ----------
 
-        # Set streak in User object
-        user.cur_streak = cur_streak
+async def compute_leaderboards(user_dict: Dict[int, User], show="overall"):
+    """
+    Compute and return a Discord Embed containing the leaderboard.
+    show = "overall" | "streaks"
+    """
 
-    print(f"All caught up in {text_channel.name}\n")
+    stats = [_user_stats(u) for u in user_dict.values()]
+    stats = [s for s in stats if s is not None]
 
-    # Start streak update scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: update_streaks(user_dict), CronTrigger(minute=0, hour=0))
-    scheduler.start()
+    if not stats:
+        embed = discord.Embed(
+            title="No data yet!",
+            description="No Wordle results have been recorded.",
+            color=discord.Color.orange(),
+        )
+        return embed
+
+    global_mean = sum(s["avg"] for s in stats) / len(stats)
+
+    # Apply Bayesian ranking
+    for s in stats:
+        s["bayes"] = _bayesian_average(s["avg"], s["games_played"], global_mean)
+
+    # Filter according to leaderboard type
+    if show == "overall":
+        filtered = [s for s in stats if s["games_played"] >= BAYESIAN_THRESHOLD]
+        title = "🏆 Wordle Leaderboard (Overall)"
+        desc = f"Players with ≥{BAYESIAN_THRESHOLD} games played"
+    else:  # streaks
+        filtered = [s for s in stats if s["current_streak"] > 3]
+        title = "🔥 Current Streak Leaderboard"
+        desc = "Only players with a streak > 3"
+
+    # Sort ascending by Bayesian average (lower = better)
+    filtered.sort(key=lambda s: s["bayes"])
+
+    # Build leaderboard display
+    lines = []
+    for rank, s in enumerate(filtered, 1):
+        lines.append(
+            f"**{rank}. {s['name']}** — "
+            f"Avg: {s['avg']:.2f} | "
+            f"Streak: {s['current_streak']} | "
+            f"Streak Avg: {s['streak_avg']:.2f} | "
+            f"Compl: {s['completion']:.0f}% | "
+            f"Longest: {s['longest_streak']} | "
+            f"StdDev: {s['stddev']:.2f}"
+        )
+
+    if not lines:
+        desc += "\n\n(No qualifying players yet.)"
+
+    embed = discord.Embed(
+        title=title,
+        description=desc + "\n\n" + "\n".join(lines),
+        color=discord.Color.gold() if show == "overall" else discord.Color.green(),
+    )
+    embed.set_footer(text=f"Sorted by Bayesian average (threshold={BAYESIAN_THRESHOLD}, hidden)")
+    return embed

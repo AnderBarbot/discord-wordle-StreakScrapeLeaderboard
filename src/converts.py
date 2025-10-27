@@ -3,27 +3,37 @@
 # converts.py
 # Author: Petter J. Barhaugen <petter@petternett.no>
 
-from datetime import datetime
-import emoji  # parse result squares
+from datetime import datetime, timedelta
+import emoji  #allows emoji normalization/comparison
 
+"""
+converts date to wordle number and vice-versa.
+emoji conversion would allow parsing of result emoji grids. currently unussed
+
+Functions:
+ - num_to_date(number): map Wordle number -> date
+ - date_to_num(date_arg): map date -> Wordle number
+ - convert_grid(message_lines): parse emoji result lines -> numeric grid
+
+Dev note:
+ - Functions are async to match the bot's calling convention. they are not async ops
+"""
 
 # Date-number calculation
 date_format = "%d.%m.%Y %H:%M:%S"
 min_date = "01.01.2022 00:00:00"
 
+#base_num / base_date are a historical number/date pair
 base_num  = 259
 base_date = "05.03.2022 00:00:00"
 base_date_dt = datetime.strptime(base_date, date_format)
 
-"""
-Time to Wordle number calculation functions
-"""
+
 async def num_to_date(number):
     delta = number - base_num
     ret = base_date_dt + timedelta(days=delta)
 
     return ret.date()
-
 
 async def date_to_num(date_arg=datetime.today()):
     return base_num + int((date_arg - base_date_dt).days)
@@ -31,8 +41,8 @@ async def date_to_num(date_arg=datetime.today()):
 
 
 """
-Convert message lines to grid
-Experimental. check that this works
+Convert message lines to grid.
+unused, experimental.
 """
 async def convert_grid(message_lines):
     # Initalize 2D array with 0's
