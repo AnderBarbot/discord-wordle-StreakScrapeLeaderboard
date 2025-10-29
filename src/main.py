@@ -52,6 +52,15 @@ async def on_message(message):
         if parsed:
             mark_message_processed(message.id)
             logger.info(f"[Parse] Added {parsed} results from message {message.id}")
+
+                        # --- NEW CODE START ---
+            try:
+                embed = await build_leaderboard_embed(bot.user_dict, message.guild)
+                channel = message.channel
+                await channel.send(embed=embed)
+                logger.info(f"[Leaderboard] Updated leaderboard sent to #{channel.name}")
+            except Exception:
+                logger.exception("Error sending updated leaderboard")
     except Exception:
         logger.exception("Error parsing message")
 
