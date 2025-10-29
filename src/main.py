@@ -4,6 +4,15 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 
+"""
+main.py
+---------
+Entry point for the Wordle Discord Bot.
+Initializes the bot, registers slash commands,
+handles events (message parsing, catch-up, reset),
+and coordinates between the database and parsing modules.
+"""
+
 from storage import (
     init_db, load_all_users, clear_all_users,
     message_already_processed, mark_message_processed

@@ -1,11 +1,21 @@
 # Wordle Discord Bot
-Gathers and displays statistics about Wordle games in a Discord channel or thread. 
+Gathers and displays statistics about Wordle games in a Discord channel or thread.
+Automatically parses "streak" posts, tracks streaks and averages, and displays a leaderboard that updates when new results appear.
 
+![Streak Message Example](assets/StreakMessage.png)
+[Copied plaintext from streak message](assets/streakmessage.txt)
+[Leaderboard message](assets/leaderboard)
 
 
 ## Features
-tbd
+Automatically detects and parses Wordle "streak' messages.
+Tracks user stats (games, wins/losses, streaks, and scores).
+Calculates both raw and Bayesian-adjusted averages for fairer rankings.
+    Bayesian average effectively pulls everyone towards the mean. users with many scores resist the pull better.
+Generates a nicely formatted leaderboard using Discord embeds.
+Persists user data and processed messages in a local SQLite database.
 
+Supports slash commands for leaderboard, catch-up parsing, and data reset.
 
 
 ## todo ideas
@@ -14,7 +24,6 @@ stddev or confidence interval availability.
 early poster stat (vv difficult to implement, but I would love to do it).
 starter word scores
 time spent pondering
-
 
 
 ## Setup
@@ -54,7 +63,7 @@ add/invite the bot to your server, as described above.
 run it via 
     'python src/main.py'
 
-then use the commands below to your heart's content.
-/leaderboard (display basic leaderboard)
-/catchup (scrape message history for new data)
-/reset (reset the bot)
+catchup the bot up using the /catchup command.
+post the current leaderboard using /leaderboard
+
+now you can leave the bot running and it will read streak messages and update the leaderboard daily. 
