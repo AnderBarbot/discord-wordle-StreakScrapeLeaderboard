@@ -1,5 +1,13 @@
 import sqlite3, json
 
+"""
+storage.py
+------------
+Handles all persistent storage for the Wordle Discord Bot.
+Creates and manages the SQLite database, including user stats
+and processed message tracking to prevent duplicate parsing.
+"""
+
 DB_PATH = "wordle.db"
 
 def init_db():

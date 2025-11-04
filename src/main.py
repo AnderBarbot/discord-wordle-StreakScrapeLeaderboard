@@ -17,7 +17,7 @@ from storage import (
     init_db, load_all_users, clear_all_users,
     message_already_processed, mark_message_processed
 )
-from processes import parse_wordle_message, build_leaderboard_embed, GROUP_TRIGGER
+from processes import handle_all_messages, build_leaderboard_embed
 
 # --- Setup ---
 load_dotenv()
@@ -33,7 +33,6 @@ bot = commands.Bot(command_prefix=None, intents=intents)
 
 bot.user_dict = {}
 
-# --- Events ---
 @bot.event
 async def on_ready():
     logger.info(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
@@ -51,27 +50,15 @@ async def on_ready():
 async def on_message(message):
     if message.author == bot.user:
         return
-    if GROUP_TRIGGER not in message.content:
-        return
-    if message_already_processed(message.id):
-        return
 
-    try:
-        parsed = await parse_wordle_message(message, bot.user_dict)
-        if parsed:
-            mark_message_processed(message.id)
-            logger.info(f"[Parse] Added {parsed} results from message {message.id}")
-
-                        # --- NEW CODE START ---
-            try:
-                embed = await build_leaderboard_embed(bot.user_dict, message.guild)
-                channel = message.channel
-                await channel.send(embed=embed)
-                logger.info(f"[Leaderboard] Updated leaderboard sent to #{channel.name}")
-            except Exception:
-                logger.exception("Error sending updated leaderboard")
-    except Exception:
-        logger.exception("Error parsing message")
+    parsed = await handle_all_messages(message, bot.user_dict)
+    if parsed:
+        try:
+            embed = await build_leaderboard_embed(bot.user_dict, message.guild)
+            await message.channel.send(embed=embed)
+            logger.info(f"[Leaderboard] Updated after processing message {message.id}")
+        except Exception:
+            logger.exception("Error sending updated leaderboard")
 
 # --- Slash Commands ---
 @bot.tree.command(name="leaderboard", description="Show Wordle leaderboard")
@@ -79,24 +66,16 @@ async def leaderboard(interaction: discord.Interaction):
     embed = await build_leaderboard_embed(bot.user_dict, interaction.guild)
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="catchup", description="Parse all past Wordle messages in this channel")
+@bot.tree.command(name="catchup", description="Parse all past Wordle and cheater messages in this channel")
 async def catchup(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     count = 0
     async for msg in interaction.channel.history(limit=None, oldest_first=True):
-        if GROUP_TRIGGER not in msg.content or msg.author == bot.user:
+        if msg.author == bot.user:
             continue
-        if message_already_processed(msg.id):
-            logger.debug(f"message already processed: {msg.id}")
-            continue
-        try:
-            logger.debug(f"parsing message {msg.content}")
-            parsed = await parse_wordle_message(msg, bot.user_dict)
-            if parsed:
-                mark_message_processed(msg.id)
-                count += parsed
-        except Exception:
-            logger.exception(f"Error parsing message {msg.id}")
+        parsed = await handle_all_messages(msg, bot.user_dict)
+        if parsed:
+            count += parsed
     await interaction.followup.send(f"✅ Catch-up complete. Parsed {count} messages.", ephemeral=True)
 
 @bot.tree.command(name="reset", description="Reset all Wordle data (admin only)")

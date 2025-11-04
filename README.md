@@ -65,5 +65,6 @@ run it via
 
 catchup the bot up using the /catchup command.
 post the current leaderboard using /leaderboard
+replace users lowest score with a 9 via "... @user cheated ..." from an admin
 
-now you can leave the bot running and it will read streak messages and update the leaderboard daily. 
+now you can leave the bot running and it will read streak/cheater messages, then update the leaderboard.

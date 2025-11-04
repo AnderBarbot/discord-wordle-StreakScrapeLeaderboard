@@ -3,8 +3,17 @@ import asyncio
 import statistics
 import discord
 from datetime import datetime
-from storage import save_user_stats
+from storage import save_user_stats, mark_message_processed, message_already_processed
 import logging
+
+"""
+processes.py
+---------------
+Core parsing and leaderboard logic for the Wordle Discord Bot.
+Responsible for detecting valid Wordle result messages,
+extracting player performance data, updating user stats,
+and generating leaderboard embeds for Discord display.
+"""
 
 # --- Config & Patterns ---
 logger = logging.getLogger("wordle_bot")
@@ -12,13 +21,66 @@ GROUP_TRIGGER = "Your group is on"
 RESULTS_MARKER = re.compile(r"Here are yesterday'?s results\s*:", re.IGNORECASE)
 SCORE_PATTERN = re.compile(r"([1-6X])/6", re.IGNORECASE)
 MENTION_PATTERN = re.compile(r"<@!?(\d+)>")
+CHEATER_PATTERN = re.compile(r"<@!?(\d+)>.*\bcheated\b", re.IGNORECASE)
 BAYESIAN_THRESHOLD = 5
 
-# --- Helper: Bayesian average ---
-def _bayesian_avg(mean, n, global_mean, threshold=BAYESIAN_THRESHOLD):
-    return (threshold * global_mean + n * mean) / (threshold + n)
+# orchestrates message handling
+async def handle_all_messages(message, user_dict):
+    if message_already_processed(message.id):
+        logger.debug(f"[Handle] Message {message.id} already processed")
+        return 0
 
-# --- Core Parser ---
+    parsed = 0
+    try:
+        # cheater messages
+        if "cheated" in message.content.lower():
+            parsed = await parse_cheater_message(message, user_dict)
+
+        # Normal Wordle messages
+        elif GROUP_TRIGGER in message.content:
+            parsed = await parse_wordle_message(message, user_dict)
+        if parsed:
+            mark_message_processed(message.id)
+            logger.debug(f"[Handle] Message {message.id} processed and marked")
+        else:
+            logger.debug(f"[Handle] Message {message.id} contained no valid data")
+
+    except Exception as e:
+        logger.exception(f"[Handle] Error handling message {message.id}: {e}")
+    return parsed
+
+# Cheater messages from admins replace lowest score with 9. format: "@user cheated"
+async def parse_cheater_message(message, user_dict):
+    logger.debug(f"[Cheater] Checking message {message.id}")
+    content = message.content.strip()
+
+    match = CHEATER_PATTERN.search(content)
+    if not match:
+        logger.debug("[Cheater] No cheater tag found")
+        return 0
+    if not message.author.guild_permissions.administrator:
+        logger.warning(f"[Cheater] Non-admin attempted cheater tag: {message.author}")
+        return 0
+    uid = match.group(1)
+    if uid not in user_dict:
+        logger.warning(f"[Cheater] Mentioned user {uid} not found in user_dict")
+        return 0
+    u = user_dict[uid]
+    if not u.get("tries_list"):
+        logger.warning(f"[Cheater] User {u['username']} has no tries_list to modify.")
+        return 0
+
+    # cheater found, replace lowest score with 9
+    lowest_idx = u["tries_list"].index(min(u["tries_list"]))
+    old_score = u["tries_list"][lowest_idx]
+    u["tries_list"][lowest_idx] = 9
+    user_dict[uid] = u
+
+    await asyncio.to_thread(save_user_stats, u)
+    logger.info(f"[Cheater] Replaced {u['username']}'s lowest score ({old_score}) with 9")
+    return 1
+
+# wordle bot leaderboard message parsing
 async def parse_wordle_message(message, user_dict):
     """Parse a Wordle message, update user stats, and return number of entries parsed."""
     content = message.content.strip()
@@ -90,13 +152,11 @@ async def parse_wordle_message(message, user_dict):
             else:
                 u["losses"] += 1
 
-            # Increment streak for any result
             u["current_streak"] += 1
             u["longest_streak"] = max(u["longest_streak"], u["current_streak"])
 
             user_dict[uid] = u
 
-            # Save asynchronously
             try:
                 await asyncio.to_thread(save_user_stats, u)
             except Exception as e:
@@ -111,7 +171,12 @@ async def parse_wordle_message(message, user_dict):
 
     return parsed
 
-# --- Leaderboard Builder ---
+# bayesian averages takes the users scores, then adds x average scores from your overall server before calculating the mean "user score".
+# effectively pulls everyone towards the mean. users with many scores can resist the pull better. 
+def _bayesian_avg(mean, n, global_mean, threshold=BAYESIAN_THRESHOLD):
+    return (threshold * global_mean + n * mean) / (threshold + n)
+
+#builds leaderboard embed, hopefully readable as 1 line per user in discord
 async def build_leaderboard_embed(user_dict, guild=None):
     rows = []
 
@@ -145,7 +210,6 @@ async def build_leaderboard_embed(user_dict, guild=None):
     if not rows:
         return discord.Embed(title="🏆 Wordle Leaderboard", description="No data yet!")
 
-    # Sort by Bayesian average
     rows.sort(key=lambda r: r["adj_avg"])
 
     header = f"{'User':<10}{'Avg':>8}{'Adj-Avg':>8}{'Games':>6}{'Loss':>6}{'Streak':>8}{'Longest':>8}"
