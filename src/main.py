@@ -17,7 +17,7 @@ from storage import (
     init_db, load_all_users, clear_all_users,
     message_already_processed, mark_message_processed
 )
-from processes import handle_all_messages, build_leaderboard_embed
+from processes import handle_all_messages, build_leaderboard_embed, set_handicap, set_user_lowest_score
 
 # --- Setup ---
 load_dotenv()
@@ -86,6 +86,46 @@ async def reset(interaction: discord.Interaction):
     clear_all_users()
     bot.user_dict.clear()
     await interaction.response.send_message("🗑️ All data has been reset.", ephemeral=True)
+
+@bot.tree.command(name="handicap", description="Set handicap value for a user (decimal, non-integer)")
+@discord.app_commands.describe(user="User to handicap", value="Handicap value (decimal, non-integer)")
+async def handicap(interaction: discord.Interaction, user: discord.Member, value: str):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Only admins can set handicaps.", ephemeral=True)
+        return
+    try:
+        val = float(value)
+        if val == int(val):
+            await interaction.response.send_message("❌ Handicap value cannot be an integer. Please provide a decimal with up to 2 decimals.", ephemeral=True)
+            return
+        val = round(val, 2)
+    except ValueError:
+        await interaction.response.send_message("❌ Invalid handicap value. Please provide a decimal number.", ephemeral=True)
+        return
+    
+    result = await set_handicap(str(user.id), val, bot.user_dict)
+    if result:
+        await interaction.response.send_message(f"✅ Handicap set for {user.display_name} to {val}", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Failed to set handicap. User not found.", ephemeral=True)
+
+@bot.tree.command(name="cheater", description="Set a user's lowest score to a specified value (admin only)")
+@discord.app_commands.describe(user="User whose lowest score to replace", score="New score to set (integer)")
+async def cheater(interaction: discord.Interaction, user: discord.Member, score: int):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Only admins can use this command.", ephemeral=True)
+        return
+    if score < 1 or score > 10:
+        await interaction.response.send_message("❌ Score must be an integer between 1 and 10.", ephemeral=True)
+        return
+
+    result = await set_user_lowest_score(str(user.id), score, bot.user_dict)
+    if result:
+        await interaction.response.send_message(f"✅ Replaced {user.display_name}'s lowest score with {score}.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ Failed to update score. User not found or no scores recorded.", ephemeral=True)
+
+
 
 if __name__ == "__main__":
     bot.run(TOKEN)

@@ -16,12 +16,13 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
             username TEXT,
-            games INTEGER,
-            wins INTEGER,
-            losses INTEGER,
+            games INTEGER DEFAULT 0,
+            wins INTEGER DEFAULT 0,
+            losses INTEGER DEFAULT 0,
             tries_list TEXT,
-            current_streak INTEGER,
-            longest_streak INTEGER
+            current_streak INTEGER DEFAULT 0,
+            longest_streak INTEGER DEFAULT 0,
+            handicap REAL DEFAULT 0
         )
         """)
         conn.execute("""
@@ -34,8 +35,8 @@ def init_db():
 def save_user_stats(u):
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
-        INSERT INTO users (user_id, username, games, wins, losses, tries_list, current_streak, longest_streak)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO users (user_id, username, games, wins, losses, tries_list, current_streak, longest_streak, handicap)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             username=excluded.username,
             games=excluded.games,
@@ -43,12 +44,14 @@ def save_user_stats(u):
             losses=excluded.losses,
             tries_list=excluded.tries_list,
             current_streak=excluded.current_streak,
-            longest_streak=excluded.longest_streak
+            longest_streak=excluded.longest_streak,
+            handicap=excluded.handicap
         """, (
             u["user_id"], u.get("username"),
             u["games"], u["wins"], u["losses"],
             json.dumps(u["tries_list"]),
-            u["current_streak"], u["longest_streak"]
+            u["current_streak"], u["longest_streak"],
+            u["handicap"]
         ))
 
 def load_all_users():
@@ -65,6 +68,7 @@ def load_all_users():
             "tries_list": json.loads(r[5]) if r[5] else [],
             "current_streak": r[6],
             "longest_streak": r[7],
+            "handicap": r[8]
         }
     return users
 
